@@ -1,5 +1,3 @@
-// +build !confonly
-
 package tls
 
 import (
@@ -11,14 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/protocol/tls/cert"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/tls/cert"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
-var (
-	globalSessionCache = tls.NewLRUClientSessionCache(128)
-)
+var globalSessionCache = tls.NewLRUClientSessionCache(128)
 
 const exp8357 = "experiment:8357"
 
@@ -34,11 +30,13 @@ func ParseCertificate(c *cert.Certificate) *Certificate {
 	return nil
 }
 
-func (c *Config) loadSelfCertPool() (*x509.CertPool, error) {
+func (c *Config) loadSelfCertPool(usage Certificate_Usage) (*x509.CertPool, error) {
 	root := x509.NewCertPool()
 	for _, cert := range c.Certificate {
-		if !root.AppendCertsFromPEM(cert.Certificate) {
-			return nil, newError("failed to append cert").AtWarning()
+		if cert.Usage == usage {
+			if !root.AppendCertsFromPEM(cert.Certificate) {
+				return nil, newError("failed to append cert").AtWarning()
+			}
 		}
 	}
 	return root, nil
@@ -69,7 +67,7 @@ func isCertificateExpired(c *tls.Certificate) bool {
 	}
 
 	// If leaf is not there, the certificate is probably not used yet. We trust user to provide a valid certificate.
-	return c.Leaf != nil && c.Leaf.NotAfter.Before(time.Now().Add(-time.Minute))
+	return c.Leaf != nil && c.Leaf.NotAfter.Before(time.Now().Add(time.Minute*2))
 }
 
 func issueCertificate(rawCA *Certificate, domain string) (*tls.Certificate, error) {
@@ -122,6 +120,9 @@ func getGetCertificateFunc(c *tls.Config, ca []*Certificate) func(hello *tls.Cli
 				cert := certificate
 				if !isCertificateExpired(&cert) {
 					newCerts = append(newCerts, cert)
+				} else if cert.Leaf != nil {
+					expTime := cert.Leaf.NotAfter.Format(time.RFC3339)
+					newError("old certificate for ", domain, " (expire on ", expTime, ") discard").AtInfo().WriteToLog()
 				}
 			}
 
@@ -138,6 +139,14 @@ func getGetCertificateFunc(c *tls.Config, ca []*Certificate) func(hello *tls.Cli
 				if err != nil {
 					newError("failed to issue new certificate for ", domain).Base(err).WriteToLog()
 					continue
+				}
+				parsed, err := x509.ParseCertificate(newCert.Certificate[0])
+				if err == nil {
+					newCert.Leaf = parsed
+					expTime := parsed.NotAfter.Format(time.RFC3339)
+					newError("new certificate for ", domain, " (expire on ", expTime, ") issued").AtInfo().WriteToLog()
+				} else {
+					newError("failed to parse new certificate for ", domain).Base(err).WriteToLog()
 				}
 
 				access.Lock()
@@ -202,6 +211,11 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		}
 	}
 
+	clientRoot, err := c.loadSelfCertPool(Certificate_AUTHORITY_VERIFY_CLIENT)
+	if err != nil {
+		newError("failed to load client root certificate").AtError().Base(err).WriteToLog()
+	}
+
 	config := &tls.Config{
 		ClientSessionCache:     globalSessionCache,
 		RootCAs:                root,
@@ -209,6 +223,7 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		NextProtos:             c.NextProtocol,
 		SessionTicketsDisabled: !c.EnableSessionResumption,
 		VerifyPeerCertificate:  c.verifyPeerCert,
+		ClientCAs:              clientRoot,
 	}
 
 	for _, opt := range opts {
@@ -231,6 +246,31 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		config.NextProtos = []string{"h2", "http/1.1"}
 	}
 
+	if c.VerifyClientCertificate {
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	switch c.MinVersion {
+	case Config_TLS1_0:
+		config.MinVersion = tls.VersionTLS10
+	case Config_TLS1_1:
+		config.MinVersion = tls.VersionTLS11
+	case Config_TLS1_2:
+		config.MinVersion = tls.VersionTLS12
+	case Config_TLS1_3:
+		config.MinVersion = tls.VersionTLS13
+	}
+
+	switch c.MaxVersion {
+	case Config_TLS1_0:
+		config.MaxVersion = tls.VersionTLS10
+	case Config_TLS1_1:
+		config.MaxVersion = tls.VersionTLS11
+	case Config_TLS1_2:
+		config.MaxVersion = tls.VersionTLS12
+	case Config_TLS1_3:
+		config.MaxVersion = tls.VersionTLS13
+	}
 	return config
 }
 
@@ -260,9 +300,11 @@ func ConfigFromStreamSettings(settings *internet.MemoryStreamConfig) *Config {
 	if settings == nil {
 		return nil
 	}
-	config, ok := settings.SecuritySettings.(*Config)
-	if !ok {
+	if settings.SecuritySettings == nil {
 		return nil
 	}
+	// Fail close for unknown TLS settings type.
+	// For TLS Clients, Security Engine should be used, instead of this.
+	config := settings.SecuritySettings.(*Config)
 	return config
 }

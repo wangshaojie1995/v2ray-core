@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	. "github.com/v2fly/v2ray-core/v4/common/platform"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/platform"
 )
 
 func TestNormalizeEnvName(t *testing.T) {
@@ -31,14 +31,14 @@ func TestNormalizeEnvName(t *testing.T) {
 		},
 	}
 	for _, test := range cases {
-		if v := NormalizeEnvName(test.input); v != test.output {
+		if v := platform.NormalizeEnvName(test.input); v != test.output {
 			t.Error("unexpected output: ", v, " want ", test.output)
 		}
 	}
 }
 
 func TestEnvFlag(t *testing.T) {
-	if v := (EnvFlag{
+	if v := (platform.EnvFlag{
 		Name: "xxxxx.y",
 	}.GetValueAsInt(10)); v != 10 {
 		t.Error("env value: ", v)
@@ -75,19 +75,18 @@ func TestWrongErrorCheckOnOSStat(t *testing.T) {
 func TestGetAssetLocation(t *testing.T) {
 	exec, err := os.Executable()
 	common.Must(err)
-
-	loc := GetAssetLocation("t")
+	loc := platform.GetAssetLocation("t")
 	if filepath.Dir(loc) != filepath.Dir(exec) {
 		t.Error("asset dir: ", loc, " not in ", exec)
 	}
 
 	os.Setenv("v2ray.location.asset", "/v2ray")
 	if runtime.GOOS == "windows" {
-		if v := GetAssetLocation("t"); v != "\\v2ray\\t" {
+		if v := platform.GetAssetLocation("t"); v != "\\v2ray\\t" {
 			t.Error("asset loc: ", v)
 		}
 	} else {
-		if v := GetAssetLocation("t"); v != "/v2ray/t" {
+		if v := platform.GetAssetLocation("t"); v != "/v2ray/t" {
 			t.Error("asset loc: ", v)
 		}
 	}

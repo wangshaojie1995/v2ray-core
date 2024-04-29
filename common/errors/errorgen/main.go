@@ -17,7 +17,7 @@ func main() {
 		pkg = "core"
 	}
 
-	file, err := os.OpenFile("errors.generated.go", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0644)
+	file, err := os.OpenFile("errors.generated.go", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
 	if err != nil {
 		fmt.Printf("Failed to generate errors.generated.go: %v", err)
 		os.Exit(1)
@@ -26,7 +26,7 @@ func main() {
 
 	fmt.Fprintf(file, `package %s
 
-import "github.com/v2fly/v2ray-core/v4/common/errors"
+import "github.com/v2fly/v2ray-core/v5/common/errors"
 
 type errPathObjHolder struct{}
 

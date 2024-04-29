@@ -1,3 +1,4 @@
+//go:build !confonly
 // +build !confonly
 
 package grpc
@@ -13,12 +14,13 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
-	"github.com/v2fly/v2ray-core/v4/transport/internet/grpc/encoding"
-	"github.com/v2fly/v2ray-core/v4/transport/internet/tls"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/grpc/encoding"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tls"
 )
 
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (internet.Connection, error) {
@@ -35,6 +37,8 @@ func init() {
 	common.Must(internet.RegisterTransportDialer(protocolName, Dial))
 }
 
+type dialerCanceller func()
+
 var (
 	globalDialerMap    map[net.Destination]*grpc.ClientConn
 	globalDialerAccess sync.Mutex
@@ -44,26 +48,26 @@ func dialgRPC(ctx context.Context, dest net.Destination, streamSettings *interne
 	grpcSettings := streamSettings.ProtocolSettings.(*Config)
 
 	config := tls.ConfigFromStreamSettings(streamSettings)
-	var dialOption = grpc.WithInsecure()
+	dialOption := grpc.WithInsecure()
 
 	if config != nil {
 		dialOption = grpc.WithTransportCredentials(credentials.NewTLS(config.GetTLSConfig()))
 	}
 
-	conn, err := getGrpcClient(dest, dialOption)
-
+	conn, canceller, err := getGrpcClient(ctx, dest, dialOption, streamSettings)
 	if err != nil {
 		return nil, newError("Cannot dial grpc").Base(err)
 	}
 	client := encoding.NewGunServiceClient(conn)
 	gunService, err := client.(encoding.GunServiceClientX).TunCustomName(ctx, grpcSettings.ServiceName)
 	if err != nil {
+		canceller()
 		return nil, newError("Cannot dial grpc").Base(err)
 	}
 	return encoding.NewGunConn(gunService, nil), nil
 }
 
-func getGrpcClient(dest net.Destination, dialOption grpc.DialOption) (*grpc.ClientConn, error) {
+func getGrpcClient(ctx context.Context, dest net.Destination, dialOption grpc.DialOption, streamSettings *internet.MemoryStreamConfig) (*grpc.ClientConn, dialerCanceller, error) {
 	globalDialerAccess.Lock()
 	defer globalDialerAccess.Unlock()
 
@@ -71,8 +75,15 @@ func getGrpcClient(dest net.Destination, dialOption grpc.DialOption) (*grpc.Clie
 		globalDialerMap = make(map[net.Destination]*grpc.ClientConn)
 	}
 
+	canceller := func() {
+		globalDialerAccess.Lock()
+		defer globalDialerAccess.Unlock()
+		delete(globalDialerMap, dest)
+	}
+
+	// TODO Should support chain proxy to the same destination
 	if client, found := globalDialerMap[dest]; found && client.GetState() != connectivity.Shutdown {
-		return client, nil
+		return client, canceller, nil
 	}
 
 	conn, err := grpc.Dial(
@@ -87,7 +98,7 @@ func getGrpcClient(dest net.Destination, dialOption grpc.DialOption) (*grpc.Clie
 			},
 			MinConnectTimeout: 5 * time.Second,
 		}),
-		grpc.WithContextDialer(func(ctx context.Context, s string) (gonet.Conn, error) {
+		grpc.WithContextDialer(func(ctxGrpc context.Context, s string) (gonet.Conn, error) {
 			rawHost, rawPort, err := net.SplitHostPort(s)
 			if err != nil {
 				return nil, err
@@ -100,9 +111,10 @@ func getGrpcClient(dest net.Destination, dialOption grpc.DialOption) (*grpc.Clie
 				return nil, err
 			}
 			address := net.ParseAddress(rawHost)
-			return internet.DialSystem(ctx, net.TCPDestination(address, port), nil)
+			detachedContext := core.ToBackgroundDetachedContext(ctx)
+			return internet.DialSystem(detachedContext, net.TCPDestination(address, port), streamSettings.SocketSettings)
 		}),
 	)
 	globalDialerMap[dest] = conn
-	return conn, err
+	return conn, canceller, err
 }

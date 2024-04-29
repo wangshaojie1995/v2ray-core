@@ -1,5 +1,3 @@
-// +build !confonly
-
 package browserforwarder
 
 import (
@@ -7,18 +5,19 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/v2fly/BrowserBridge/handler"
 
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/platform/securedload"
-	"github.com/v2fly/v2ray-core/v4/features/ext"
-	"github.com/v2fly/v2ray-core/v4/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/platform/securedload"
+	"github.com/v2fly/v2ray-core/v5/features/extension"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
-//go:generate go run github.com/v2fly/v2ray-core/v4/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 type Forwarder struct {
 	ctx context.Context
@@ -43,27 +42,57 @@ func (f *Forwarder) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 }
 
 func (f *Forwarder) DialWebsocket(url string, header http.Header) (io.ReadWriteCloser, error) {
-	return f.forwarder.Dial(url)
+	protocolHeader := false
+	protocolHeaderValue := ""
+	unsupportedHeader := false
+	for k, v := range header {
+		if k == "Sec-Websocket-Protocol" {
+			protocolHeader = true
+			protocolHeaderValue = v[0]
+		} else {
+			unsupportedHeader = true
+		}
+	}
+	if unsupportedHeader {
+		return nil, newError("unsupported header used, only Sec-Websocket-Protocol is supported for forwarder")
+	}
+	if !protocolHeader {
+		return f.forwarder.Dial(url)
+	}
+	return f.forwarder.Dial2(url, protocolHeaderValue)
 }
 
 func (f *Forwarder) Type() interface{} {
-	return ext.BrowserForwarderType()
+	return extension.BrowserForwarderType()
 }
 
 func (f *Forwarder) Start() error {
-	f.forwarder = handler.NewHttpHandle()
-	f.httpserver = &http.Server{Handler: f}
-	address := net.ParseAddress(f.config.ListenAddr)
-	listener, err := internet.ListenSystem(f.ctx, &net.TCPAddr{IP: address.IP(), Port: int(f.config.ListenPort)}, nil)
-	if err != nil {
-		return newError("forwarder cannot listen on the port").Base(err)
-	}
-	go func() {
-		err = f.httpserver.Serve(listener)
-		if err != nil {
-			newError("cannot serve http forward server").Base(err).WriteToLog()
+	if f.config.ListenAddr != "" {
+		f.forwarder = handler.NewHttpHandle()
+		f.httpserver = &http.Server{Handler: f}
+
+		var listener net.Listener
+		var err error
+		address := net.ParseAddress(f.config.ListenAddr)
+
+		switch {
+		case address.Family().IsIP():
+			listener, err = internet.ListenSystem(f.ctx, &net.TCPAddr{IP: address.IP(), Port: int(f.config.ListenPort)}, nil)
+		case strings.EqualFold(address.Domain(), "localhost"):
+			listener, err = internet.ListenSystem(f.ctx, &net.TCPAddr{IP: net.IP{127, 0, 0, 1}, Port: int(f.config.ListenPort)}, nil)
+		default:
+			return newError("forwarder cannot listen on the address: ", address)
 		}
-	}()
+		if err != nil {
+			return newError("forwarder cannot listen on the port ", f.config.ListenPort).Base(err)
+		}
+
+		go func() {
+			if err := f.httpserver.Serve(listener); err != nil {
+				newError("cannot serve http forward server").Base(err).WriteToLog()
+			}
+		}()
+	}
 	return nil
 }
 

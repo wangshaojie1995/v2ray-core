@@ -1,3 +1,4 @@
+//go:build !confonly
 // +build !confonly
 
 package observatory
@@ -7,20 +8,21 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/common"
-	v2net "github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/session"
-	"github.com/v2fly/v2ray-core/v4/common/signal/done"
-	"github.com/v2fly/v2ray-core/v4/common/task"
-	"github.com/v2fly/v2ray-core/v4/features/extension"
-	"github.com/v2fly/v2ray-core/v4/features/outbound"
-	"github.com/v2fly/v2ray-core/v4/transport/internet/tagged"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	v2net "github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal/done"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/extension"
+	"github.com/v2fly/v2ray-core/v5/features/outbound"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tagged"
 )
 
 type Observer struct {
@@ -44,13 +46,18 @@ func (o *Observer) Type() interface{} {
 }
 
 func (o *Observer) Start() error {
-	o.finished = done.New()
-	go o.background()
+	if o.config != nil && len(o.config.SubjectSelector) != 0 {
+		o.finished = done.New()
+		go o.background()
+	}
 	return nil
 }
 
 func (o *Observer) Close() error {
-	return o.finished.Close()
+	if o.finished != nil {
+		return o.finished.Close()
+	}
+	return nil
 }
 
 func (o *Observer) background() {
@@ -62,16 +69,30 @@ func (o *Observer) background() {
 		}
 
 		outbounds := hs.Select(o.config.SubjectSelector)
+		sort.Strings(outbounds)
 
 		o.updateStatus(outbounds)
 
+		slept := false
 		for _, v := range outbounds {
 			result := o.probe(v)
 			o.updateStatusForResult(v, &result)
 			if o.finished.Done() {
 				return
 			}
-			time.Sleep(time.Second * 10)
+			sleepTime := time.Second * 10
+			if o.config.ProbeInterval != 0 {
+				sleepTime = time.Duration(o.config.ProbeInterval)
+			}
+			time.Sleep(sleepTime)
+			slept = true
+		}
+		if !slept {
+			sleepTime := time.Second * 10
+			if o.config.ProbeInterval != 0 {
+				sleepTime = time.Duration(o.config.ProbeInterval)
+			}
+			time.Sleep(sleepTime)
 		}
 	}
 }
@@ -101,7 +122,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 				trackedCtx := session.TrackedConnectionError(o.ctx, errorCollectorForRequest)
 				conn, err := tagged.Dialer(trackedCtx, dest, outbound)
 				if err != nil {
-					return newError("cannot dial remote address", dest).Base(err)
+					return newError("cannot dial remote address ", dest).Base(err)
 				}
 				connection = conn
 				return nil
@@ -124,7 +145,11 @@ func (o *Observer) probe(outbound string) ProbeResult {
 	var GETTime time.Duration
 	err := task.Run(o.ctx, func() error {
 		startTime := time.Now()
-		response, err := httpClient.Get("https://api.v2fly.org/checkConnection.svgz")
+		probeURL := "https://api.v2fly.org/checkConnection.svgz"
+		if o.config.ProbeUrl != "" {
+			probeURL = o.config.ProbeUrl
+		}
+		response, err := httpClient.Get(probeURL)
 		if err != nil {
 			return newError("outbound failed to relay connection").Base(err)
 		}
@@ -139,12 +164,12 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		fullerr := newError("underlying connection failed").Base(errorCollectorForRequest.UnderlyingError())
 		fullerr = newError("with outbound handler report").Base(fullerr)
 		fullerr = newError("GET request failed:", err).Base(fullerr)
-		fullerr = newError("the outbound ", outbound, "is dead:").Base(fullerr)
+		fullerr = newError("the outbound ", outbound, " is dead:").Base(fullerr)
 		fullerr = fullerr.AtInfo()
 		fullerr.WriteToLog()
 		return ProbeResult{Alive: false, LastErrorReason: fullerr.Error()}
 	}
-	newError("the outbound ", outbound, "is alive:", GETTime.Seconds()).AtInfo().WriteToLog()
+	newError("the outbound ", outbound, " is alive:", GETTime.Seconds()).AtInfo().WriteToLog()
 	return ProbeResult{Alive: true, Delay: GETTime.Milliseconds()}
 }
 

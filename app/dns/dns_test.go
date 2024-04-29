@@ -6,24 +6,25 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/miekg/dns"
+	"google.golang.org/protobuf/types/known/anypb"
 
-	core "github.com/v2fly/v2ray-core/v4"
-	"github.com/v2fly/v2ray-core/v4/app/dispatcher"
-	. "github.com/v2fly/v2ray-core/v4/app/dns"
-	"github.com/v2fly/v2ray-core/v4/app/policy"
-	"github.com/v2fly/v2ray-core/v4/app/proxyman"
-	_ "github.com/v2fly/v2ray-core/v4/app/proxyman/outbound"
-	"github.com/v2fly/v2ray-core/v4/app/router"
-	"github.com/v2fly/v2ray-core/v4/common"
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/serial"
-	feature_dns "github.com/v2fly/v2ray-core/v4/features/dns"
-	"github.com/v2fly/v2ray-core/v4/proxy/freedom"
-	"github.com/v2fly/v2ray-core/v4/testing/servers/udp"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/app/dispatcher"
+	. "github.com/v2fly/v2ray-core/v5/app/dns"
+	"github.com/v2fly/v2ray-core/v5/app/policy"
+	"github.com/v2fly/v2ray-core/v5/app/proxyman"
+	_ "github.com/v2fly/v2ray-core/v5/app/proxyman/outbound"
+	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/strmatcher"
+	feature_dns "github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/proxy/freedom"
+	"github.com/v2fly/v2ray-core/v5/testing/servers/udp"
 )
 
-type staticHandler struct {
-}
+type staticHandler struct{}
 
 func (*staticHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	ans := new(dns.Msg)
@@ -104,6 +105,16 @@ func (*staticHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		case q.Name == "Mijia\\ Cloud." && q.Qtype == dns.TypeA:
 			rr, _ := dns.NewRR("Mijia\\ Cloud. IN A 127.0.0.1")
 			ans.Answer = append(ans.Answer, rr)
+
+		case q.Name == "xn--vi8h.ws." /* 🍕.ws */ && q.Qtype == dns.TypeA:
+			rr, err := dns.NewRR("xn--vi8h.ws. IN A 208.100.42.200")
+			common.Must(err)
+			ans.Answer = append(ans.Answer, rr)
+
+		case q.Name == "xn--l8jaaa.com." /* ああああ.com */ && q.Qtype == dns.TypeA:
+			rr, err := dns.NewRR("xn--l8jaaa.com. IN AAAA a:a:a:a::aaaa")
+			common.Must(err)
+			ans.Answer = append(ans.Answer, rr)
 		}
 	}
 	w.WriteMsg(ans)
@@ -123,7 +134,7 @@ func TestUDPServerSubnet(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -178,7 +189,7 @@ func TestUDPServer(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -251,6 +262,28 @@ func TestUDPServer(t *testing.T) {
 		}
 	}
 
+	{
+		ips, err := client.LookupIP(common.Must2(strmatcher.ToDomain("🍕.ws")).(string))
+		if err != nil {
+			t.Fatal("unexpected error: ", err)
+		}
+
+		if r := cmp.Diff(ips, []net.IP{{208, 100, 42, 200}}); r != "" {
+			t.Fatal(r)
+		}
+	}
+
+	{
+		ips, err := client.LookupIP(common.Must2(strmatcher.ToDomain("ああああ.com")).(string))
+		if err != nil {
+			t.Fatal("unexpected error: ", err)
+		}
+
+		if r := cmp.Diff(ips, []net.IP{{0, 0xa, 0, 0xa, 0, 0xa, 0, 0xa, 0, 0, 0, 0, 0, 0, 0xaa, 0xaa}}); r != "" {
+			t.Fatal(r)
+		}
+	}
+
 	dnsServer.Shutdown()
 
 	{
@@ -279,7 +312,7 @@ func TestPrioritizedDomain(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -361,7 +394,7 @@ func TestUDPServerIPv6(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -417,7 +450,7 @@ func TestStaticHostDomain(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -430,7 +463,7 @@ func TestStaticHostDomain(t *testing.T) {
 						Port: uint32(port),
 					},
 				},
-				StaticHosts: []*Config_HostMapping{
+				StaticHosts: []*HostMapping{
 					{
 						Type:          DomainMatchingType_Full,
 						Domain:        "example.com",
@@ -482,7 +515,7 @@ func TestIPMatch(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServer: []*NameServer{
 					// private dns, not match
@@ -496,10 +529,10 @@ func TestIPMatch(t *testing.T) {
 							},
 							Port: uint32(port),
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{
 								CountryCode: "local",
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{
 										// inner ip, will not match
 										Ip:     []byte{192, 168, 11, 1},
@@ -520,10 +553,10 @@ func TestIPMatch(t *testing.T) {
 							},
 							Port: uint32(port),
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{
 								CountryCode: "test",
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{
 										Ip:     []byte{8, 8, 8, 8},
 										Prefix: 32,
@@ -532,7 +565,7 @@ func TestIPMatch(t *testing.T) {
 							},
 							{
 								CountryCode: "test",
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{
 										Ip:     []byte{8, 8, 8, 4},
 										Prefix: 32,
@@ -592,7 +625,7 @@ func TestLocalDomain(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -620,10 +653,10 @@ func TestLocalDomain(t *testing.T) {
 							// Equivalent of dotless:localhost
 							{Type: DomainMatchingType_Regex, Domain: "^[^.]*localhost[^.]*$"},
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{ // Will match localhost, localhost-a and localhost-b,
 								CountryCode: "local",
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{Ip: []byte{127, 0, 0, 2}, Prefix: 32},
 									{Ip: []byte{127, 0, 0, 3}, Prefix: 32},
 									{Ip: []byte{127, 0, 0, 4}, Prefix: 32},
@@ -649,7 +682,7 @@ func TestLocalDomain(t *testing.T) {
 						},
 					},
 				},
-				StaticHosts: []*Config_HostMapping{
+				StaticHosts: []*HostMapping{
 					{
 						Type:   DomainMatchingType_Full,
 						Domain: "hostnamestatic",
@@ -788,7 +821,7 @@ func TestMultiMatchPrioritizedDomain(t *testing.T) {
 	time.Sleep(time.Second)
 
 	config := &core.Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&Config{
 				NameServers: []*net.Endpoint{
 					{
@@ -818,9 +851,9 @@ func TestMultiMatchPrioritizedDomain(t *testing.T) {
 								Domain: "google.com",
 							},
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{ // Will only match 8.8.8.8 and 8.8.4.4
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{Ip: []byte{8, 8, 8, 8}, Prefix: 32},
 									{Ip: []byte{8, 8, 4, 4}, Prefix: 32},
 								},
@@ -843,9 +876,9 @@ func TestMultiMatchPrioritizedDomain(t *testing.T) {
 								Domain: "google.com",
 							},
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{ // Will match 8.8.8.8 and 8.8.8.7, etc
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{Ip: []byte{8, 8, 8, 7}, Prefix: 24},
 								},
 							},
@@ -867,9 +900,9 @@ func TestMultiMatchPrioritizedDomain(t *testing.T) {
 								Domain: "api.google.com",
 							},
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{ // Will only match 8.8.7.7 (api.google.com)
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{Ip: []byte{8, 8, 7, 7}, Prefix: 32},
 								},
 							},
@@ -891,9 +924,9 @@ func TestMultiMatchPrioritizedDomain(t *testing.T) {
 								Domain: "v2.api.google.com",
 							},
 						},
-						Geoip: []*router.GeoIP{
+						Geoip: []*routercommon.GeoIP{
 							{ // Will only match 8.8.7.8 (v2.api.google.com)
-								Cidr: []*router.CIDR{
+								Cidr: []*routercommon.CIDR{
 									{Ip: []byte{8, 8, 7, 8}, Prefix: 32},
 								},
 							},

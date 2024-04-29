@@ -1,5 +1,3 @@
-// +build !confonly
-
 package websocket
 
 import (
@@ -10,14 +8,12 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/v2fly/v2ray-core/v4/common/buf"
-	"github.com/v2fly/v2ray-core/v4/common/errors"
-	"github.com/v2fly/v2ray-core/v4/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
 )
 
-var (
-	_ buf.Writer = (*connection)(nil)
-)
+var _ buf.Writer = (*connection)(nil)
 
 // connection is a wrapper for net.Conn over WebSocket connection.
 type connection struct {
@@ -51,21 +47,21 @@ func newConnectionWithEarlyData(conn *websocket.Conn, remoteAddr net.Addr, early
 }
 
 func newConnectionWithDelayedDial(dialer DelayedDialer) *connection {
-	delayedDialContext, CancellFunc := context.WithCancel(context.Background())
+	delayedDialContext, cancelFunc := context.WithCancel(context.Background())
 	return &connection{
 		shouldWait:        true,
 		delayedDialFinish: delayedDialContext,
-		finishedDial:      CancellFunc,
+		finishedDial:      cancelFunc,
 		dialer:            dialer,
 	}
 }
 
 func newRelayedConnectionWithDelayedDial(dialer DelayedDialerForwarded) *connectionForwarder {
-	delayedDialContext, CancellFunc := context.WithCancel(context.Background())
+	delayedDialContext, cancelFunc := context.WithCancel(context.Background())
 	return &connectionForwarder{
 		shouldWait:        true,
 		delayedDialFinish: delayedDialContext,
-		finishedDial:      CancellFunc,
+		finishedDial:      cancelFunc,
 		dialer:            dialer,
 	}
 }

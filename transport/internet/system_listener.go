@@ -2,23 +2,38 @@ package internet
 
 import (
 	"context"
+	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pires/go-proxyproto"
 
-	"github.com/v2fly/v2ray-core/v4/common/net"
-	"github.com/v2fly/v2ray-core/v4/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
 )
 
-var (
-	effectiveListener = DefaultListener{}
-)
+var effectiveListener = DefaultListener{}
 
 type controller func(network, address string, fd uintptr) error
 
 type DefaultListener struct {
 	controllers []controller
+}
+
+type combinedListener struct {
+	net.Listener
+	locker *FileLocker // for unix domain socket
+}
+
+func (l *combinedListener) Close() error {
+	if l.locker != nil {
+		l.locker.Release()
+		l.locker = nil
+	}
+	return l.Listener.Close()
 }
 
 func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []controller) func(network, address string, c syscall.RawConn) error {
@@ -43,14 +58,20 @@ func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []co
 
 func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *SocketConfig) (net.Listener, error) {
 	var lc net.ListenConfig
-	var l net.Listener
-	var err error
 	var network, address string
+	// callback is called after the Listen function returns
+	// this is used to wrap the listener and do some post processing
+	callback := func(l net.Listener, err error) (net.Listener, error) {
+		return l, err
+	}
 	switch addr := addr.(type) {
 	case *net.TCPAddr:
 		network = addr.Network()
 		address = addr.String()
 		lc.Control = getControlFunc(ctx, sockopt, dl.controllers)
+		if sockopt != nil && (sockopt.TcpKeepAliveInterval != 0 || sockopt.TcpKeepAliveIdle != 0) {
+			lc.KeepAlive = time.Duration(-1)
+		}
 	case *net.UnixAddr:
 		lc.Control = nil
 		network = addr.Network()
@@ -64,20 +85,48 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
 				address = string(fullAddr)
 			}
 		} else {
+			// normal unix domain socket
+			var fileMode *os.FileMode
+			// parse file mode from address
+			if s := strings.Split(address, ","); len(s) == 2 {
+				fMode, err := strconv.ParseUint(s[1], 8, 32)
+				if err != nil {
+					return nil, newError("failed to parse file mode").Base(err)
+				}
+				address = s[0]
+				fm := os.FileMode(fMode)
+				fileMode = &fm
+			}
 			// normal unix domain socket needs lock
 			locker := &FileLocker{
 				path: address + ".lock",
 			}
-			err := locker.Acquire()
-			if err != nil {
+			if err := locker.Acquire(); err != nil {
 				return nil, err
 			}
-			ctx = context.WithValue(ctx, address, locker) // nolint: golint,staticcheck
+			// set file mode for unix domain socket when it is created
+			callback = func(l net.Listener, err error) (net.Listener, error) {
+				if err != nil {
+					locker.Release()
+					return nil, err
+				}
+				l = &combinedListener{Listener: l, locker: locker}
+				if fileMode == nil {
+					return l, err
+				}
+				if cerr := os.Chmod(address, *fileMode); cerr != nil {
+					// failed to set file mode, close the listener
+					l.Close()
+					return nil, newError("failed to set file mode for file: ", address).Base(cerr)
+				}
+				return l, err
+			}
 		}
 	}
 
-	l, err = lc.Listen(ctx, network, address)
-	if sockopt != nil && sockopt.AcceptProxyProtocol {
+	l, err := lc.Listen(ctx, network, address)
+	l, err = callback(l, err)
+	if err == nil && sockopt != nil && sockopt.AcceptProxyProtocol {
 		policyFunc := func(upstream net.Addr) (proxyproto.Policy, error) { return proxyproto.REQUIRE, nil }
 		l = &proxyproto.Listener{Listener: l, Policy: policyFunc}
 	}
@@ -103,4 +152,9 @@ func RegisterListenerController(controller func(network, address string, fd uint
 
 	effectiveListener.controllers = append(effectiveListener.controllers, controller)
 	return nil
+}
+
+type SystemListener interface {
+	Listen(ctx context.Context, addr net.Addr, sockopt *SocketConfig) (net.Listener, error)
+	ListenPacket(ctx context.Context, addr net.Addr, sockopt *SocketConfig) (net.PacketConn, error)
 }

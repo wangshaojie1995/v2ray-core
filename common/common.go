@@ -5,7 +5,7 @@ package common
 import (
 	"fmt"
 	"go/build"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,15 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v2fly/v2ray-core/v4/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
 )
 
-//go:generate go run github.com/v2fly/v2ray-core/v4/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
-var (
-	// ErrNoClue is for the situation that existing information is not enough to make a decision. For example, Router may return this error when there is no suitable route.
-	ErrNoClue = errors.New("not enough information for making a decision")
-)
+// ErrNoClue is for the situation that existing information is not enough to make a decision. For example, Router may return this error when there is no suitable route.
+var ErrNoClue = errors.New("not enough information for making a decision")
 
 // Must panics if err is not nil.
 func Must(err error) {
@@ -72,7 +70,7 @@ func GetRuntimeEnv(key string) (string, error) {
 	}
 	var data []byte
 	var runtimeEnv string
-	data, readErr := ioutil.ReadFile(file)
+	data, readErr := os.ReadFile(file)
 	if readErr != nil {
 		return "", readErr
 	}
@@ -155,7 +153,7 @@ func FetchHTTPContent(target string) ([]byte, error) {
 		return nil, newError("unexpected HTTP status code: ", resp.StatusCode)
 	}
 
-	content, err := ioutil.ReadAll(resp.Body)
+	content, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, newError("failed to read HTTP response").Base(err)
 	}
